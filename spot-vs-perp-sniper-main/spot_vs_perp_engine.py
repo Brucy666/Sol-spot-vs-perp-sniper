@@ -11,6 +11,7 @@ from feeds.okx_feed import OKXCVDTracker
 from feeds.funding_feed import FundingRateTracker
 from feeds.delta_spike_feed import DeltaSpikeTracker
 
+from utils.alert_cluster_buffer import AlertClusterBuffer
 from utils.discord_alert import send_discord_alert
 from utils.memory_logger import log_snapshot
 from utils.cvd_snapshot_writer import write_snapshot_to_supabase
@@ -29,7 +30,8 @@ class SpotVsPerpEngine:
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
         self.funding_tracker = FundingRateTracker()
-        self.delta_tracker = DeltaSpikeTracker()  # NEW
+        self.delta_tracker = DeltaSpikeTracker()
+        self.alert_buffer = AlertClusterBuffer(buffer_window=60)
 
         self.memory = MultiTFMemory()
         self.alert_dispatcher = SpotPerpAlertDispatcher()
@@ -85,26 +87,20 @@ class SpotVsPerpEngine:
 
                 if funding_rate < -0.01 and cb_cvd > 0:
                     signal = "💥 Negative funding + Spot buying — possible short squeeze trap"
-
                 elif spike_data["spike"] and cb_cvd < 0:
                     signal = "🔥 Perp delta spike with Spot selling — possible buyer trap"
-
                 elif cb_cvd > 0 and bin_spot > 0 and bin_perp < 0:
                     signal = "✅ Spot-led move — real demand (Coinbase & Binance Spot rising)"
-
                 elif bin_perp > 0 and cb_cvd < 0 and bin_spot <= 0:
                     signal = "🚨 Perp-led pump — potential trap (Spot not participating)"
-
                 elif bybit_cvd > 0 and bin_perp < 0:
                     signal = "⚠️ Bybit retail buying while Binance is fading — watch for fakeout"
-
                 elif okx_cvd < 0 and bin_perp > 0:
                     signal = "🟡 OKX futures selling while Binance perps buying — Asia dump risk"
-
                 elif cb_cvd > 0 and bin_spot < 0:
                     signal = "🟣 US Spot buying (Coinbase) while Binance Spot is weak — divergence"
 
-                # === Console ===
+                # === Console Log ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
@@ -148,16 +144,19 @@ class SpotVsPerpEngine:
                     self.last_signal_time = now
                     self.last_signal_hash = signal_hash
 
-                # === Discord Alert ===
-                await self.alert_dispatcher.maybe_alert(
-                    signal,
-                    confidence,
-                    bias_label,
-                    deltas.get("15m", {}),
-                    force_test=FORCE_TEST_ALERT
-                )
+                # === Cluster-Aware Discord Alert ===
+                should_alert = self.alert_buffer.should_send(signal, confidence, bias_label)
 
-                # === Execute Sniper ===
+                if should_alert:
+                    await self.alert_dispatcher.maybe_alert(
+                        signal,
+                        confidence,
+                        bias_label,
+                        deltas.get("15m", {}),
+                        force_test=FORCE_TEST_ALERT
+                    )
+
+                # === Execute Sniper Trade ===
                 if self.executor.should_execute(confidence, bias_label):
                     self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
 
