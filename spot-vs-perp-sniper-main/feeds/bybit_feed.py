@@ -1,12 +1,10 @@
-# feeds/bybit_feed.py
-
 import asyncio
 import websockets
 import json
 
 class BybitCVDTracker:
-    def __init__(self, symbol="BTCUSDT"):
-        self.symbol = symbol
+    def __init__(self, symbol="SOLUSDT"):
+        self.symbol = symbol.upper()
         self.cvd = 0
         self.price = None
 
@@ -24,9 +22,9 @@ class BybitCVDTracker:
     async def handle_message(self, msg):
         if "data" in msg and "topic" in msg:
             for trade in msg["data"]:
-                side = trade["S"]  # "Buy" or "Sell"
-                qty = float(trade["v"])
-                price = float(trade["p"])
+                side = trade.get("S")  # "Buy" or "Sell"
+                qty = float(trade.get("v", 0))
+                price = float(trade.get("p", 0))
                 self.price = price
 
                 if side == "Buy":
@@ -42,7 +40,7 @@ class BybitCVDTracker:
 
 
 if __name__ == "__main__":
-    tracker = BybitCVDTracker()
+    tracker = BybitCVDTracker(symbol="SOLUSDT")
 
     async def run():
         await tracker.connect()
