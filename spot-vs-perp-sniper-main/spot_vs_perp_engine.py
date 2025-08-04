@@ -25,8 +25,7 @@ class SpotVsPerpEngine:
         self.coinbase = CoinbaseSpotCVD(product_id="SOL-USD")
         self.binance = BinanceCVDTracker(spot_symbol="SOLUSDT", perp_symbol="SOLUSDT")
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
-        self.okx = OKXCVDTracker(symbol="SOL-USDT-SWAP")
-
+        self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
         self.memory = MultiTFMemory()
         self.alert_dispatcher = SpotPerpAlertDispatcher(asset="SOL")
         self.executor = SniperExecutor(asset="SOL")
