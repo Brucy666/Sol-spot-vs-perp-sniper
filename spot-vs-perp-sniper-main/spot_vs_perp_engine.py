@@ -11,6 +11,7 @@ from feeds.okx_feed import OKXCVDTracker
 from feeds.funding_feed import FundingRateTracker
 from feeds.delta_spike_feed import DeltaSpikeTracker
 from feeds.sentiment_feed import SentimentTracker
+from feeds.btc_reference_feed import BTCReferenceFeed
 
 from utils.alert_cluster_buffer import AlertClusterBuffer
 from utils.discord_alert import send_discord_alert
@@ -31,6 +32,7 @@ class SpotVsPerpEngine:
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
 
+        self.btc = BTCReferenceFeed()
         self.funding_tracker = FundingRateTracker()
         self.delta_tracker = DeltaSpikeTracker()
         self.sentiment = SentimentTracker(symbol="SOL")
@@ -51,6 +53,7 @@ class SpotVsPerpEngine:
             self.binance.connect(),
             self.bybit.connect(),
             self.okx.connect(),
+            self.btc.connect(),
             self.monitor()
         )
 
@@ -73,6 +76,126 @@ class SpotVsPerpEngine:
                 okx_price = self.okx.get_price()
 
                 # === External Feeds ===
+                await self.funding_tracker.update()
+                funding_rate = self.funding_tracker.get_average()
+
+                self.delta_tracker.add_tick(bin_perp)
+                spike_data = self.delta_tracker.check_spike()
+
+                self.sentiment.fetch_sentiment()
+                sentiment_data = self.sentiment.get_summary()
+
+                btc_data = self.btc.get_deltas()
+                btc_spot = btc_data["btc_spot"]
+                btc_perp = btc_data["btc_perp"]
+                btc_price = btc_data["price"]
+
+                # === Score ===
+                self.memory.update(cb_cvd, bin_spot, bin_perp)
+                deltas = self.memory.get_all_deltas()
+                scored = score_spot_perp_confluence_multi(deltas)
+                confidence = scored["score"]
+                bias_label = scored["label"]
+
+                # === Signal Logic ===
+                signal = "📊 No clear bias"
+
+                if funding_rate < -0.01 and cb_cvd > 0:
+                    signal = "💥 Negative funding + Spot buying — short squeeze trap"
+
+                elif spike_data["spike"] and cb_cvd < 0:
+                    signal = "🔥 Perp delta spike + Spot selling — buyer trap likely"
+
+                elif cb_cvd > 0 and bin_spot > 0 and bin_perp < 0 and btc_spot > 0:
+                    signal = "✅ Spot-led move with BTC confirmation — strong demand"
+
+                elif cb_cvd > 0 and bin_spot > 0 and btc_spot < 0:
+                    signal = "⚠️ SOL spot strong but BTC fading — possible local top"
+
+                elif bin_perp > 0 and cb_cvd < 0 and bin_spot <= 0:
+                    signal = "🚨 Perp-led pump — no spot participation (trap)"
+
+                elif bybit_cvd > 0 and bin_perp < 0:
+                    signal = "⚠️ Bybit retail buying, Binance fading — exit risk"
+
+                elif okx_cvd < 0 and bin_perp > 0:
+                    signal = "🟡 OKX selling, Binance buying — Asia dump risk"
+
+                elif cb_cvd > 0 and bin_spot < 0:
+                    signal = "🟣 Coinbase buying, Binance Spot selling — divergence"
+
+                # === Console Log ===
+                print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
+                print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
+                print(f"🟦 Binance Spot CVD: {bin_spot}")
+                print(f"🟥 Binance Perp CVD: {bin_perp} | Price: {bin_price}")
+                print(f"🟧 Bybit Perp CVD: {bybit_cvd} | Price: {bybit_price}")
+                print(f"🟪 OKX Futures CVD: {okx_cvd} | Price: {okx_price}")
+                print(f"📉 Funding Rate: {funding_rate}%")
+                print(f"⚡ Delta Spike: {spike_data}")
+                print(f"📣 Sentiment: {sentiment_data}")
+                print(f"🔗 BTC Spot CVD: {btc_spot} | BTC Perp CVD: {btc_perp} | Price: {btc_price}")
+                print(f"\n🧠 Signal: {signal}")
+                for tf, tf_deltas in deltas.items():
+                    print(f"🕒 {tf} CVD Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
+                print(f"💡 Confidence Score: {confidence}/10 → {bias_label.upper()}")
+                print("====================================================================")
+
+                # === Snapshot ===
+                snapshot = {
+                    "exchange": "multi",
+                    "signal": signal,
+                    "confidence": confidence,
+                    "bias": bias_label,
+                    "price": bin_price or cb_price or bybit_price or okx_price,
+                    "funding_rate": funding_rate,
+                    "spike": spike_data["spike"],
+                    "spike_delta": spike_data["net_delta"],
+                    "sentiment_score": sentiment_data["galaxy_score"],
+                    "social_mentions": sentiment_data["mentions"],
+                    "btc_spot": btc_spot,
+                    "btc_perp": btc_perp
+                }
+
+                log_snapshot(snapshot)
+
+                now = time.time()
+                signal_signature = f"{signal}-{bin_spot}-{cb_cvd}-{bin_perp}"
+                signal_hash = hashlib.sha256(signal_signature.encode()).hexdigest()
+
+                is_unique = signal_hash != self.last_signal_hash
+                is_cooldown = now - self.last_signal_time > self.signal_cooldown_seconds
+                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥", "🔥"])
+
+                if is_unique and is_cooldown and is_meaningful:
+                    write_snapshot_to_supabase(snapshot)
+                    self.last_signal = signal
+                    self.last_signal_time = now
+                    self.last_signal_hash = signal_hash
+
+                # === Cluster-Aware Alert ===
+                if self.alert_buffer.should_send(signal, confidence, bias_label):
+                    await self.alert_dispatcher.maybe_alert(
+                        signal,
+                        confidence,
+                        bias_label,
+                        deltas.get("15m", {}),
+                        force_test=FORCE_TEST_ALERT
+                    )
+
+                # === Trade Execution (Optional) ===
+                if self.executor.should_execute(confidence, bias_label):
+                    self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
+
+            except Exception as e:
+                print(f"[ERROR] Monitor loop failed: {e}")
+
+            await asyncio.sleep(5)
+
+
+if __name__ == "__main__":
+    engine = SpotVsPerpEngine()
+    asyncio.run(engine.run())                # === External Feeds ===
                 await self.funding_tracker.update()
                 funding_rate = self.funding_tracker.get_average()
 
