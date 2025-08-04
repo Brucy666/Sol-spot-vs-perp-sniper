@@ -3,10 +3,10 @@ import hashlib
 from utils.discord_alert import send_discord_alert
 
 class SpotPerpAlertDispatcher:
-    def __init__(self, cooldown_seconds=900):
+    def __init__(self, cooldown_seconds=300):  # 🧠 Reduced from 900 → 300 for SOL volatility
         self.last_signal_time = 0
         self.last_signal_hash = ""
-        self.cooldown_seconds = cooldown_seconds  # 15-minute cooldown by default
+        self.cooldown_seconds = cooldown_seconds
 
     async def maybe_alert(self, signal_text, confidence, label, deltas, force_test=False):
         now = time.time()
@@ -19,7 +19,7 @@ class SpotPerpAlertDispatcher:
                 f"🧪 **TEST SNIPER SIGNAL (SOL)**\n"
                 f"{signal_text}\n\n"
                 f"🧠 Confidence Score: `{confidence}/10` → `{label}`\n"
-                f"🎯 Suggested Trade: **🟢 LONG (Test)**\n"
+                f"🎯 Suggested Trade: **🟢 LONG (Test Mode)**\n"
                 f"📊 Simulated 15m CVD Δ:\n"
                 f"   • Coinbase: `{deltas.get('cb_cvd', 'n/a')}%`\n"
                 f"   • Binance Spot: `{deltas.get('bin_spot', 'n/a')}%`\n"
@@ -29,7 +29,7 @@ class SpotPerpAlertDispatcher:
             print("✅ [TEST ALERT SENT]")
             return
 
-        # === Normal Alert Conditions ===
+        # === Real Alert Conditions ===
         is_dominant_trend = label in ["spot_dominant", "perp_dominant"]
         is_high_confidence = confidence >= 7
         is_not_duplicate = signal_hash != self.last_signal_hash
