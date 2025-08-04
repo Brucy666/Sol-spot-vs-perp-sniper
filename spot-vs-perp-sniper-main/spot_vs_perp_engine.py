@@ -23,7 +23,7 @@ class SpotVsPerpEngine:
     def __init__(self):
         # 🪙 These now pull SOL-USD / SOLUSDT data only
         self.coinbase = CoinbaseSpotCVD(product_id="SOL-USD")
-        self.binance = BinanceCVDTracker(symbol="SOLUSDT")
+        self.binance = BinanceCVDTracker(spot_symbol="SOLUSDT", perp_symbol="SOLUSDT")
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(symbol="SOL-USDT-SWAP")
 
