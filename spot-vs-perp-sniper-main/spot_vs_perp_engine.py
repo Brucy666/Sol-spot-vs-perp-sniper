@@ -19,6 +19,8 @@ from sniper_executor import SniperExecutor
 
 load_dotenv()
 
+FORCE_TEST_ALERT = os.getenv("FORCE_TEST_ALERT", "false").lower() == "true"
+
 class SpotVsPerpEngine:
     def __init__(self):
         self.coinbase = CoinbaseSpotCVD(product_id="SOL-USD")
@@ -27,7 +29,7 @@ class SpotVsPerpEngine:
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
 
         self.memory = MultiTFMemory()
-        self.alert_dispatcher = SpotPerpAlertDispatcher()  # No asset param unless logic supports it
+        self.alert_dispatcher = SpotPerpAlertDispatcher()
         self.executor = SniperExecutor()
 
         self.last_signal = None
@@ -82,7 +84,7 @@ class SpotVsPerpEngine:
                 elif cb_cvd > 0 and bin_spot < 0:
                     signal = "🟣 US Spot buying (Coinbase) while Binance Spot is weak — divergence"
 
-                # === Console Report ===
+                # === Console Log ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
@@ -95,7 +97,7 @@ class SpotVsPerpEngine:
                 print(f"💡 Confidence Score: {confidence}/10 → {bias_label.upper()}")
                 print("====================================================================")
 
-                # === Snapshot Logging ===
+                # === Snapshot ===
                 snapshot = {
                     "exchange": "multi",
                     "spot_cvd": bin_spot,
@@ -106,7 +108,7 @@ class SpotVsPerpEngine:
 
                 log_snapshot(snapshot)
 
-                # === Save to Supabase if unique & strong ===
+                # === Supabase Logging ===
                 now = time.time()
                 signal_signature = f"{signal}-{bin_spot}-{cb_cvd}-{bin_perp}"
                 signal_hash = hashlib.sha256(signal_signature.encode()).hexdigest()
@@ -121,15 +123,16 @@ class SpotVsPerpEngine:
                     self.last_signal_time = now
                     self.last_signal_hash = signal_hash
 
-                # === Send Sniper Alert ===
+                # === Discord Alert ===
                 await self.alert_dispatcher.maybe_alert(
                     signal,
                     confidence,
                     bias_label,
-                    deltas.get("15m", {})
+                    deltas.get("15m", {}),
+                    force_test=FORCE_TEST_ALERT  # Set TRUE in .env to simulate live alert
                 )
 
-                # === Execute Sniper ===
+                # === Execution (Live) ===
                 if self.executor.should_execute(confidence, bias_label):
                     self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
 
