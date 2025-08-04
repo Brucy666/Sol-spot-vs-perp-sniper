@@ -1,11 +1,9 @@
-# feeds/coinbase_feed.py
-
 import asyncio
 import websockets
 import json
 
 class CoinbaseSpotCVD:
-    def __init__(self, product_id="BTC-USD"):
+    def __init__(self, product_id="SOL-USD"):
         self.product_id = product_id
         self.cvd = 0
         self.last_price = None
@@ -40,7 +38,7 @@ class CoinbaseSpotCVD:
 
 
 if __name__ == "__main__":
-    tracker = CoinbaseSpotCVD()
+    tracker = CoinbaseSpotCVD(product_id="SOL-USD")
 
     async def run():
         await tracker.connect()
