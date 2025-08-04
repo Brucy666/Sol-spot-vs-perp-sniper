@@ -21,14 +21,15 @@ load_dotenv()
 
 class SpotVsPerpEngine:
     def __init__(self):
-        self.coinbase = CoinbaseSpotCVD()
-        self.binance = BinanceCVDTracker()
-        self.bybit = BybitCVDTracker()
-        self.okx = OKXCVDTracker()
+        # 🪙 These now pull SOL-USD / SOLUSDT data only
+        self.coinbase = CoinbaseSpotCVD(symbol="SOL-USD")
+        self.binance = BinanceCVDTracker(symbol="SOLUSDT")
+        self.bybit = BybitCVDTracker(symbol="SOLUSDT")
+        self.okx = OKXCVDTracker(symbol="SOL-USDT-SWAP")
 
         self.memory = MultiTFMemory()
-        self.alert_dispatcher = SpotPerpAlertDispatcher()
-        self.executor = SniperExecutor()
+        self.alert_dispatcher = SpotPerpAlertDispatcher(asset="SOL")
+        self.executor = SniperExecutor(asset="SOL")
 
         self.last_signal = None
         self.last_signal_time = 0
@@ -83,7 +84,7 @@ class SpotVsPerpEngine:
                     signal = "🟣 US Spot buying (Coinbase) while Binance Spot is weak — divergence"
 
                 # === Console Report ===
-                print("\n==================== SPOT vs PERP REPORT ====================")
+                print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
                 print(f"🟥 Binance Perp CVD: {bin_perp} | Price: {bin_price}")
@@ -93,7 +94,7 @@ class SpotVsPerpEngine:
                 for tf, tf_deltas in deltas.items():
                     print(f"🕒 {tf} CVD Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
                 print(f"💡 Confidence Score: {confidence}/10 → {bias_label.upper()}")
-                print("=============================================================")
+                print("====================================================================")
 
                 # === Snapshot Logging ===
                 snapshot = {
@@ -123,10 +124,10 @@ class SpotVsPerpEngine:
 
                 # === Send Sniper Alert ===
                 await self.alert_dispatcher.maybe_alert(
-                    signal,                       # string
-                    confidence,                   # float
-                    bias_label,                   # string
-                    deltas.get("15m", {})         # dict
+                    signal,
+                    confidence,
+                    bias_label,
+                    deltas.get("15m", {})
                 )
 
                 # === Execute Sniper ===
