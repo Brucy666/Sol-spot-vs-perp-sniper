@@ -8,7 +8,8 @@ from feeds.coinbase_feed import CoinbaseSpotCVD
 from feeds.binance_feed import BinanceCVDTracker
 from feeds.bybit_feed import BybitCVDTracker
 from feeds.okx_feed import OKXCVDTracker
-from feeds.funding_feed import FundingRateTracker  # NEW
+from feeds.funding_feed import FundingRateTracker
+from feeds.delta_spike_feed import DeltaSpikeTracker
 
 from utils.discord_alert import send_discord_alert
 from utils.memory_logger import log_snapshot
@@ -27,7 +28,8 @@ class SpotVsPerpEngine:
         self.binance = BinanceCVDTracker(spot_symbol="SOLUSDT", perp_symbol="SOLUSDT")
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
-        self.funding_tracker = FundingRateTracker()  # NEW
+        self.funding_tracker = FundingRateTracker()
+        self.delta_tracker = DeltaSpikeTracker()  # NEW
 
         self.memory = MultiTFMemory()
         self.alert_dispatcher = SpotPerpAlertDispatcher()
@@ -36,7 +38,7 @@ class SpotVsPerpEngine:
         self.last_signal = None
         self.last_signal_time = 0
         self.last_signal_hash = ""
-        self.signal_cooldown_seconds = 300  # Already optimized for SOL
+        self.signal_cooldown_seconds = 300
 
     async def run(self):
         await asyncio.gather(
@@ -65,8 +67,11 @@ class SpotVsPerpEngine:
                 okx_cvd = self.okx.get_cvd()
                 okx_price = self.okx.get_price()
 
-                await self.funding_tracker.update()  # NEW
-                funding_rate = self.funding_tracker.get_average()  # NEW
+                await self.funding_tracker.update()
+                funding_rate = self.funding_tracker.get_average()
+
+                self.delta_tracker.add_tick(bin_perp)
+                spike_data = self.delta_tracker.check_spike()
 
                 # === Score ===
                 self.memory.update(cb_cvd, bin_spot, bin_perp)
@@ -80,6 +85,9 @@ class SpotVsPerpEngine:
 
                 if funding_rate < -0.01 and cb_cvd > 0:
                     signal = "💥 Negative funding + Spot buying — possible short squeeze trap"
+
+                elif spike_data["spike"] and cb_cvd < 0:
+                    signal = "🔥 Perp delta spike with Spot selling — possible buyer trap"
 
                 elif cb_cvd > 0 and bin_spot > 0 and bin_perp < 0:
                     signal = "✅ Spot-led move — real demand (Coinbase & Binance Spot rising)"
@@ -96,7 +104,7 @@ class SpotVsPerpEngine:
                 elif cb_cvd > 0 and bin_spot < 0:
                     signal = "🟣 US Spot buying (Coinbase) while Binance Spot is weak — divergence"
 
-                # === Console Report ===
+                # === Console ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
@@ -104,6 +112,7 @@ class SpotVsPerpEngine:
                 print(f"🟧 Bybit Perp CVD: {bybit_cvd} | Price: {bybit_price}")
                 print(f"🟪 OKX Futures CVD: {okx_cvd} | Price: {okx_price}")
                 print(f"📉 Funding Rate (Avg): {funding_rate}%")
+                print(f"⚡ Delta Spike Check: {spike_data}")
                 print(f"\n🧠 Signal: {signal}")
                 for tf, tf_deltas in deltas.items():
                     print(f"🕒 {tf} CVD Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
@@ -117,7 +126,9 @@ class SpotVsPerpEngine:
                     "perp_cvd": bin_perp,
                     "price": bin_price or cb_price or bybit_price or okx_price,
                     "signal": signal,
-                    "funding_rate": funding_rate
+                    "funding_rate": funding_rate,
+                    "spike": spike_data["spike"],
+                    "spike_delta": spike_data["net_delta"]
                 }
 
                 log_snapshot(snapshot)
@@ -129,7 +140,7 @@ class SpotVsPerpEngine:
 
                 is_unique = signal_hash != self.last_signal_hash
                 is_cooldown = now - self.last_signal_time > self.signal_cooldown_seconds
-                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥"])
+                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥", "🔥"])
 
                 if is_unique and is_cooldown and is_meaningful:
                     write_snapshot_to_supabase(snapshot)
@@ -154,7 +165,6 @@ class SpotVsPerpEngine:
                 print(f"[ERROR] Monitor loop failed: {e}")
 
             await asyncio.sleep(5)
-
 
 if __name__ == "__main__":
     engine = SpotVsPerpEngine()
