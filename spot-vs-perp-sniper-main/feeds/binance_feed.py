@@ -1,13 +1,11 @@
-# feeds/binance_feed.py
-
 import asyncio
 import websockets
 import json
 
 class BinanceCVDTracker:
-    def __init__(self, spot_symbol="btcusdt", perp_symbol="btcusdt"):
-        self.spot_symbol = spot_symbol
-        self.perp_symbol = perp_symbol
+    def __init__(self, spot_symbol="solusdt", perp_symbol="solusdt"):
+        self.spot_symbol = spot_symbol.lower()
+        self.perp_symbol = perp_symbol.lower()
         self.spot_cvd = 0.0
         self.perp_cvd = 0.0
         self.price = None
