@@ -1,11 +1,9 @@
-# feeds/okx_feed.py
-
 import asyncio
 import websockets
 import json
 
 class OKXCVDTracker:
-    def __init__(self, instId="BTC-USDT-SWAP"):
+    def __init__(self, instId="SOL-USDT-SWAP"):
         self.instId = instId
         self.cvd = 0
         self.price = None
@@ -27,9 +25,9 @@ class OKXCVDTracker:
     async def handle_message(self, msg):
         if "data" in msg:
             for trade in msg["data"]:
-                side = trade["side"]  # "buy" or "sell"
-                sz = float(trade["sz"])
-                px = float(trade["px"])
+                side = trade.get("side")  # "buy" or "sell"
+                sz = float(trade.get("sz", 0))
+                px = float(trade.get("px", 0))
                 self.price = px
 
                 if side == "buy":
@@ -45,7 +43,7 @@ class OKXCVDTracker:
 
 
 if __name__ == "__main__":
-    tracker = OKXCVDTracker()
+    tracker = OKXCVDTracker(instId="SOL-USDT-SWAP")
 
     async def run():
         await tracker.connect()
