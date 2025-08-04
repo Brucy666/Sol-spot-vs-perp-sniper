@@ -10,6 +10,7 @@ from feeds.bybit_feed import BybitCVDTracker
 from feeds.okx_feed import OKXCVDTracker
 from feeds.funding_feed import FundingRateTracker
 from feeds.delta_spike_feed import DeltaSpikeTracker
+from feeds.sentiment_feed import SentimentTracker
 
 from utils.alert_cluster_buffer import AlertClusterBuffer
 from utils.discord_alert import send_discord_alert
@@ -29,18 +30,20 @@ class SpotVsPerpEngine:
         self.binance = BinanceCVDTracker(spot_symbol="SOLUSDT", perp_symbol="SOLUSDT")
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
+
         self.funding_tracker = FundingRateTracker()
         self.delta_tracker = DeltaSpikeTracker()
-        self.alert_buffer = AlertClusterBuffer(buffer_window=60)
+        self.sentiment = SentimentTracker(symbol="SOL")
 
         self.memory = MultiTFMemory()
+        self.alert_buffer = AlertClusterBuffer(buffer_window=60)
         self.alert_dispatcher = SpotPerpAlertDispatcher()
         self.executor = SniperExecutor()
 
+        self.signal_cooldown_seconds = 300
         self.last_signal = None
         self.last_signal_time = 0
         self.last_signal_hash = ""
-        self.signal_cooldown_seconds = 300
 
     async def run(self):
         await asyncio.gather(
@@ -54,7 +57,7 @@ class SpotVsPerpEngine:
     async def monitor(self):
         while True:
             try:
-                # === Collect ===
+                # === Collect Exchange Data ===
                 cb_cvd = self.coinbase.get_cvd()
                 cb_price = self.coinbase.get_last_price()
 
@@ -69,38 +72,48 @@ class SpotVsPerpEngine:
                 okx_cvd = self.okx.get_cvd()
                 okx_price = self.okx.get_price()
 
+                # === External Feeds ===
                 await self.funding_tracker.update()
                 funding_rate = self.funding_tracker.get_average()
 
                 self.delta_tracker.add_tick(bin_perp)
                 spike_data = self.delta_tracker.check_spike()
 
-                # === Score ===
+                self.sentiment.fetch_sentiment()
+                sentiment_data = self.sentiment.get_summary()
+
+                # === CVD Scoring ===
                 self.memory.update(cb_cvd, bin_spot, bin_perp)
                 deltas = self.memory.get_all_deltas()
                 scored = score_spot_perp_confluence_multi(deltas)
                 confidence = scored["score"]
                 bias_label = scored["label"]
 
-                # === Signal Logic ===
+                # === Sniper Signal Logic ===
                 signal = "📊 No clear bias"
 
                 if funding_rate < -0.01 and cb_cvd > 0:
-                    signal = "💥 Negative funding + Spot buying — possible short squeeze trap"
-                elif spike_data["spike"] and cb_cvd < 0:
-                    signal = "🔥 Perp delta spike with Spot selling — possible buyer trap"
-                elif cb_cvd > 0 and bin_spot > 0 and bin_perp < 0:
-                    signal = "✅ Spot-led move — real demand (Coinbase & Binance Spot rising)"
-                elif bin_perp > 0 and cb_cvd < 0 and bin_spot <= 0:
-                    signal = "🚨 Perp-led pump — potential trap (Spot not participating)"
-                elif bybit_cvd > 0 and bin_perp < 0:
-                    signal = "⚠️ Bybit retail buying while Binance is fading — watch for fakeout"
-                elif okx_cvd < 0 and bin_perp > 0:
-                    signal = "🟡 OKX futures selling while Binance perps buying — Asia dump risk"
-                elif cb_cvd > 0 and bin_spot < 0:
-                    signal = "🟣 US Spot buying (Coinbase) while Binance Spot is weak — divergence"
+                    signal = "💥 Negative funding + Spot buying — short squeeze trap"
 
-                # === Console Log ===
+                elif spike_data["spike"] and cb_cvd < 0:
+                    signal = "🔥 Perp delta spike + Spot selling — buyer trap likely"
+
+                elif cb_cvd > 0 and bin_spot > 0 and bin_perp < 0:
+                    signal = "✅ Spot-led move — Coinbase + Binance Spot rising"
+
+                elif bin_perp > 0 and cb_cvd < 0 and bin_spot <= 0:
+                    signal = "🚨 Perp-led pump — no spot participation (trap)"
+
+                elif bybit_cvd > 0 and bin_perp < 0:
+                    signal = "⚠️ Bybit retail buying, Binance fading — exit risk"
+
+                elif okx_cvd < 0 and bin_perp > 0:
+                    signal = "🟡 OKX selling, Binance buying — possible Asia dump"
+
+                elif cb_cvd > 0 and bin_spot < 0:
+                    signal = "🟣 Coinbase buying, Binance Spot selling — divergence"
+
+                # === Console Output ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 Coinbase Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
@@ -109,6 +122,7 @@ class SpotVsPerpEngine:
                 print(f"🟪 OKX Futures CVD: {okx_cvd} | Price: {okx_price}")
                 print(f"📉 Funding Rate (Avg): {funding_rate}%")
                 print(f"⚡ Delta Spike Check: {spike_data}")
+                print(f"📣 Sentiment Score: {sentiment_data['galaxy_score']} | Mentions: {sentiment_data['mentions']}")
                 print(f"\n🧠 Signal: {signal}")
                 for tf, tf_deltas in deltas.items():
                     print(f"🕒 {tf} CVD Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
@@ -124,12 +138,14 @@ class SpotVsPerpEngine:
                     "signal": signal,
                     "funding_rate": funding_rate,
                     "spike": spike_data["spike"],
-                    "spike_delta": spike_data["net_delta"]
+                    "spike_delta": spike_data["net_delta"],
+                    "sentiment_score": sentiment_data["galaxy_score"],
+                    "social_mentions": sentiment_data["mentions"]
                 }
 
                 log_snapshot(snapshot)
 
-                # === Supabase Save ===
+                # === Supabase Save (if strong signal) ===
                 now = time.time()
                 signal_signature = f"{signal}-{bin_spot}-{cb_cvd}-{bin_perp}"
                 signal_hash = hashlib.sha256(signal_signature.encode()).hexdigest()
@@ -144,9 +160,8 @@ class SpotVsPerpEngine:
                     self.last_signal_time = now
                     self.last_signal_hash = signal_hash
 
-                # === Cluster-Aware Discord Alert ===
+                # === Cluster-Aware Alert Dispatch ===
                 should_alert = self.alert_buffer.should_send(signal, confidence, bias_label)
-
                 if should_alert:
                     await self.alert_dispatcher.maybe_alert(
                         signal,
@@ -156,7 +171,7 @@ class SpotVsPerpEngine:
                         force_test=FORCE_TEST_ALERT
                     )
 
-                # === Execute Sniper Trade ===
+                # === Execute Trade (Optional) ===
                 if self.executor.should_execute(confidence, bias_label):
                     self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
 
@@ -164,6 +179,7 @@ class SpotVsPerpEngine:
                 print(f"[ERROR] Monitor loop failed: {e}")
 
             await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     engine = SpotVsPerpEngine()
