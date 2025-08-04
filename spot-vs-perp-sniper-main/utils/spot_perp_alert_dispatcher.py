@@ -13,7 +13,7 @@ class SpotPerpAlertDispatcher:
         signal_fingerprint = f"{signal_text}-{confidence}-{label}"
         signal_hash = hashlib.sha256(signal_fingerprint.encode()).hexdigest()
 
-        # Decision rules
+        # === Logic Rules ===
         is_dominant_trend = label in ["spot_dominant", "perp_dominant"]
         is_high_confidence = confidence >= 7
         is_not_duplicate = signal_hash != self.last_signal_hash
@@ -26,14 +26,14 @@ class SpotPerpAlertDispatcher:
             }.get(label, "⚠️ NEUTRAL")
 
             message = (
-                f"🚨 **HIGH-CONFLUENCE SNIPER SIGNAL**\n"
+                f"📈 **HIGH-CONFLUENCE SNIPER SIGNAL (SOL)**\n"
                 f"{signal_text}\n\n"
                 f"🧠 Confidence Score: `{confidence}/10` → `{label}`\n"
                 f"🎯 Suggested Trade: **{direction}**\n"
-                f"📊 15m CVD Δ:\n"
-                f"   • Coinbase: `{deltas['cb_cvd']}%`\n"
-                f"   • Binance Spot: `{deltas['bin_spot']}%`\n"
-                f"   • Binance Perp: `{deltas['bin_perp']}%`\n"
+                f"📊 15m CVD Δ Breakdown:\n"
+                f"   • Coinbase (SOL-USD): `{deltas.get('cb_cvd', 'n/a')}%`\n"
+                f"   • Binance Spot: `{deltas.get('bin_spot', 'n/a')}%`\n"
+                f"   • Binance Perp: `{deltas.get('bin_perp', 'n/a')}%`\n"
             )
 
             await send_discord_alert(message)
