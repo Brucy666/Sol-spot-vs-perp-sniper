@@ -21,14 +21,14 @@ load_dotenv()
 
 class SpotVsPerpEngine:
     def __init__(self):
-        # 🪙 These now pull SOL-USD / SOLUSDT data only
         self.coinbase = CoinbaseSpotCVD(product_id="SOL-USD")
         self.binance = BinanceCVDTracker(spot_symbol="SOLUSDT", perp_symbol="SOLUSDT")
         self.bybit = BybitCVDTracker(symbol="SOLUSDT")
         self.okx = OKXCVDTracker(instId="SOL-USDT-SWAP")
+
         self.memory = MultiTFMemory()
-        self.alert_dispatcher = SpotPerpAlertDispatcher(asset="SOL")
-        self.executor = SniperExecutor(asset="SOL")
+        self.alert_dispatcher = SpotPerpAlertDispatcher()  # No asset param unless logic supports it
+        self.executor = SniperExecutor()
 
         self.last_signal = None
         self.last_signal_time = 0
