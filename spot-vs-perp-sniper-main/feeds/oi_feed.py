@@ -7,11 +7,12 @@ class OIFeed:
         self.last_oi = None
         self.last_check = 0
         self.refresh_interval = 15  # seconds
-        self.spike_threshold_pct = 1.0  # % change threshold to count as spike
+        self.spike_threshold_pct = 1.0  # spike if OI changes > 1%
 
     def fetch_oi_from_bybit(self):
         try:
-            url = f"https://api.bybit.com/v5/market/open-interest?category=linear&symbol={self.symbol}&interval=15"
+            # ✅ FIXED: Use interval=15min (not just 15)
+            url = f"https://api.bybit.com/v5/market/open-interest?category=linear&symbol={self.symbol}&interval=15min"
             response = requests.get(url, timeout=5)
             data = response.json()
 
@@ -19,20 +20,16 @@ class OIFeed:
 
             oi_list = data.get("result", {}).get("list", [])
             if not oi_list:
-                print("[OI DEBUG] No OI data returned.")
+                print("[OI DEBUG] Empty OI list from Bybit.")
                 return None
 
             latest_entry = oi_list[-1]
-            latest_oi = latest_entry.get("openInterest")
+            latest_oi = float(latest_entry.get("openInterest", 0))
 
-            if latest_oi is None:
-                print("[OI DEBUG] Missing 'openInterest' field in latest entry.")
-                return None
-
-            return float(latest_oi)
+            return latest_oi
 
         except Exception as e:
-            print(f"[OI ERROR] {e}")
+            print(f"[OI ERROR] Failed to fetch OI: {e}")
             return None
 
     def get_snapshot(self):
@@ -44,7 +41,6 @@ class OIFeed:
         if current_oi is None:
             return self._format_oi_data(None, 0)
 
-        # Default values
         delta = 0
         direction = "flat"
         spike = False
@@ -66,7 +62,7 @@ class OIFeed:
 
     def _format_oi_data(self, oi, delta, direction="flat", spike=False, bias="neutral"):
         return {
-            "oi": round(oi, 2) if oi else None,
+            "oi": round(oi, 2) if oi is not None else None,
             "oi_delta": round(delta, 2),
             "direction": direction,
             "spike": spike,
