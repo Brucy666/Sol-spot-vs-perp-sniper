@@ -13,6 +13,7 @@ from feeds.delta_spike_feed import DeltaSpikeTracker
 from feeds.sentiment_feed import SentimentTracker
 from feeds.btc_reference_feed import BTCReferenceFeed
 from feeds.liquidation_feed import LiquidationFeed
+from feeds.oi_feed import OIFeed
 
 from utils.alert_cluster_buffer import AlertClusterBuffer
 from utils.discord_alert import send_discord_alert
@@ -37,6 +38,7 @@ class SpotVsPerpEngine:
         self.delta_tracker = DeltaSpikeTracker()
         self.sentiment = SentimentTracker(symbol="SOL")
         self.liquidations = LiquidationFeed()
+        self.oi_feed = OIFeed(symbol="SOLUSDT")
 
         self.memory = MultiTFMemory()
         self.alert_buffer = AlertClusterBuffer(buffer_window=60)
@@ -83,6 +85,7 @@ class SpotVsPerpEngine:
                 sentiment_data = self.sentiment.get_summary()
                 btc_data = self.btc.get_deltas()
                 liq_data = self.liquidations.get_liquidation_snapshot()
+                oi_data = self.oi_feed.get_snapshot()
 
                 btc_spot = btc_data["btc_spot"]
                 btc_perp = btc_data["btc_perp"]
@@ -98,11 +101,11 @@ class SpotVsPerpEngine:
                 # === Signal Logic ===
                 signal = "📊 No clear bias"
 
-                if liq_data['bias'] == 'short' and liq_data['spike'] and cb_cvd > 0:
-                    signal = "💣 Short liquidations spiking + spot strength — sniper long"
+                if liq_data['bias'] == 'short' and liq_data['spike'] and cb_cvd > 0 and oi_data['direction'] != 'down':
+                    signal = "💣 Short liquidations + Spot strength + OI rising — sniper LONG trap"
 
-                elif liq_data['bias'] == 'long' and liq_data['spike'] and cb_cvd < 0:
-                    signal = "🔥 Long liquidations on pump — short trap confirmation"
+                elif liq_data['bias'] == 'long' and liq_data['spike'] and cb_cvd < 0 and oi_data['direction'] != 'up':
+                    signal = "🔥 Long liquidations on pump + Spot weakness + OI stalling — SHORT trap forming"
 
                 elif self.funding_tracker.get_average() < -0.01 and cb_cvd > 0:
                     signal = "💥 Negative funding + Spot buying — short squeeze trap"
@@ -137,65 +140,7 @@ class SpotVsPerpEngine:
                 print(f"🟪 OKX CVD: {okx_cvd} | Price: {okx_price}")
                 print(f"📉 Funding Rate: {self.funding_tracker.get_average()}%")
                 print(f"💣 Liquidations: {liq_data}")
+                print(f"📊 OI Data: {oi_data}")
                 print(f"⚡ Delta Spike: {spike_data}")
                 print(f"📣 Sentiment: {sentiment_data}")
-                print(f"🔗 BTC Spot: {btc_spot} | BTC Perp: {btc_perp} | Price: {btc_price}")
-                print(f"\n🧠 Signal: {signal}")
-                for tf, tf_deltas in deltas.items():
-                    print(f"🕒 {tf} Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
-                print(f"💡 Confidence: {confidence}/10 → {bias_label.upper()}")
-                print("====================================================================")
-
-                # === Snapshot Logging ===
-                snapshot = {
-                    "exchange": "multi",
-                    "signal": signal,
-                    "confidence": confidence,
-                    "bias": bias_label,
-                    "price": bin_price or cb_price or bybit_price or okx_price,
-                    "funding_rate": self.funding_tracker.get_average(),
-                    "spike": spike_data["spike"],
-                    "spike_delta": spike_data["net_delta"],
-                    "sentiment_score": sentiment_data["galaxy_score"],
-                    "social_mentions": sentiment_data["mentions"],
-                    "btc_spot": btc_spot,
-                    "btc_perp": btc_perp,
-                    "liquidations": liq_data
-                }
-
-                log_snapshot(snapshot)
-
-                now = time.time()
-                signal_signature = f"{signal}-{bin_spot}-{cb_cvd}-{bin_perp}"
-                signal_hash = hashlib.sha256(signal_signature.encode()).hexdigest()
-
-                is_unique = signal_hash != self.last_signal_hash
-                is_cooldown = now - self.last_signal_time > self.signal_cooldown_seconds
-                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥", "🔥", "💣"])
-
-                if is_unique and is_cooldown and is_meaningful:
-                    write_snapshot_to_supabase(snapshot)
-                    self.last_signal = signal
-                    self.last_signal_time = now
-                    self.last_signal_hash = signal_hash
-
-                if self.alert_buffer.should_send(signal, confidence, bias_label):
-                    await self.alert_dispatcher.maybe_alert(
-                        signal,
-                        confidence,
-                        bias_label,
-                        deltas.get("15m", {}),
-                        force_test=FORCE_TEST_ALERT
-                    )
-
-                if self.executor.should_execute(confidence, bias_label):
-                    self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
-
-            except Exception as e:
-                print(f"[ERROR] Monitor loop failed: {e}")
-
-            await asyncio.sleep(5)
-
-if __name__ == "__main__":
-    engine = SpotVsPerpEngine()
-    asyncio.run(engine.run())
+                print(f"🔗 BTC Spot: {btc_spot} | BTC Per
