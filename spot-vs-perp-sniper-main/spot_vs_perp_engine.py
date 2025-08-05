@@ -10,10 +10,7 @@ from feeds.bybit_feed import BybitCVDTracker
 from feeds.okx_feed import OKXCVDTracker
 from feeds.funding_feed import FundingRateTracker
 from feeds.delta_spike_feed import DeltaSpikeTracker
-from feeds.sentiment_feed import SentimentTracker
 from feeds.btc_reference_feed import BTCReferenceFeed
-from feeds.liquidation_feed import LiquidationFeed
-from feeds.oi_feed import OIFeed
 
 from utils.alert_cluster_buffer import AlertClusterBuffer
 from utils.discord_alert import send_discord_alert
@@ -36,9 +33,6 @@ class SpotVsPerpEngine:
         self.btc = BTCReferenceFeed()
         self.funding_tracker = FundingRateTracker()
         self.delta_tracker = DeltaSpikeTracker()
-        self.sentiment = SentimentTracker(symbol="SOL")
-        self.liquidations = LiquidationFeed()
-        self.oi_feed = OIFeed(symbol="SOLUSDT")
 
         self.memory = MultiTFMemory()
         self.alert_buffer = AlertClusterBuffer(buffer_window=60)
@@ -63,7 +57,6 @@ class SpotVsPerpEngine:
     async def monitor(self):
         while True:
             try:
-                # === DATA FETCHING ===
                 cb_cvd = self.coinbase.get_cvd()
                 cb_price = self.coinbase.get_last_price()
 
@@ -82,32 +75,21 @@ class SpotVsPerpEngine:
                 self.delta_tracker.add_tick(bin_perp)
                 spike_data = self.delta_tracker.check_spike()
 
-                self.sentiment.fetch_sentiment()
-                sentiment_data = self.sentiment.get_summary()
-
                 btc_data = self.btc.get_deltas()
                 btc_spot = btc_data["btc_spot"]
                 btc_perp = btc_data["btc_perp"]
                 btc_price = btc_data["price"]
 
-                liq_data = self.liquidations.get_liquidation_snapshot()
-                oi_data = self.oi_feed.get_snapshot()
-
-                # === SCORING ===
                 self.memory.update(cb_cvd, bin_spot, bin_perp)
                 deltas = self.memory.get_all_deltas()
                 scored = score_spot_perp_confluence_multi(deltas)
                 confidence = scored["score"]
                 bias_label = scored["label"]
 
-                # === SIGNAL LOGIC ===
                 signal = "📊 No clear bias"
 
-                if liq_data['bias'] == 'short' and liq_data['spike'] and cb_cvd > 0 and oi_data['direction'] != 'down':
-                    signal = "💣 Short liquidations + Spot strength + OI rising — sniper LONG trap"
-
-                elif liq_data['bias'] == 'long' and liq_data['spike'] and cb_cvd < 0 and oi_data['direction'] != 'up':
-                    signal = "🔥 Long liquidations on pump + Spot weakness + OI stalling — SHORT trap forming"
+                if bin_perp > 0 and cb_cvd < 0 and bin_spot < 0:
+                    signal = "🔻 Perp pump + spot fade — bull trap forming (short opportunity)"
 
                 elif self.funding_tracker.get_average() < -0.01 and cb_cvd > 0:
                     signal = "💥 Negative funding + Spot buying — short squeeze trap"
@@ -131,20 +113,16 @@ class SpotVsPerpEngine:
                     signal = "🟡 OKX selling, Binance buying — Asia dump risk"
 
                 elif cb_cvd > 0 and bin_spot < 0:
-                    signal = "🟣 Coinbase buying, Binance Spot selling — divergence"
+                    signal = "🕣 Coinbase buying, Binance Spot selling — divergence"
 
-                # === CONSOLE REPORT ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 CB Spot CVD: {cb_cvd} | Price: {cb_price}")
-                print(f"🟦 Binance Spot CVD: {bin_spot}")
-                print(f"🟥 Binance Perp CVD: {bin_perp} | Price: {bin_price}")
-                print(f"🟧 Bybit Perp CVD: {bybit_cvd} | Price: {bybit_price}")
-                print(f"🟪 OKX CVD: {okx_cvd} | Price: {okx_price}")
+                print(f"🗭 Binance Spot CVD: {bin_spot}")
+                print(f"🔳 Binance Perp CVD: {bin_perp} | Price: {bin_price}")
+                print(f"🕧 Bybit Perp CVD: {bybit_cvd} | Price: {bybit_price}")
+                print(f"🕪 OKX CVD: {okx_cvd} | Price: {okx_price}")
                 print(f"📉 Funding Rate: {self.funding_tracker.get_average()}%")
-                print(f"💣 Liquidations: {liq_data}")
-                print(f"📊 OI Data: {oi_data}")
                 print(f"⚡ Delta Spike: {spike_data}")
-                print(f"📣 Sentiment: {sentiment_data}")
                 print(f"🔗 BTC Spot: {btc_spot} | BTC Perp: {btc_perp} | Price: {btc_price}")
                 print(f"\n🧠 Signal: {signal}")
                 for tf, tf_deltas in deltas.items():
@@ -152,7 +130,6 @@ class SpotVsPerpEngine:
                 print(f"💡 Confidence: {confidence}/10 → {bias_label.upper()}")
                 print("====================================================================")
 
-                # === SNAPSHOT + ALERTING ===
                 snapshot = {
                     "exchange": "multi",
                     "signal": signal,
@@ -162,12 +139,8 @@ class SpotVsPerpEngine:
                     "funding_rate": self.funding_tracker.get_average(),
                     "spike": spike_data["spike"],
                     "spike_delta": spike_data["net_delta"],
-                    "sentiment_score": sentiment_data["galaxy_score"],
-                    "social_mentions": sentiment_data["mentions"],
                     "btc_spot": btc_spot,
-                    "btc_perp": btc_perp,
-                    "liquidations": liq_data,
-                    "oi": oi_data
+                    "btc_perp": btc_perp
                 }
 
                 log_snapshot(snapshot)
@@ -178,7 +151,7 @@ class SpotVsPerpEngine:
 
                 is_unique = signal_hash != self.last_signal_hash
                 is_cooldown = now - self.last_signal_time > self.signal_cooldown_seconds
-                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥", "🔥", "💣"])
+                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🕣", "💥", "🔥", "🔻"])
 
                 if is_unique and is_cooldown and is_meaningful:
                     write_snapshot_to_supabase(snapshot)
