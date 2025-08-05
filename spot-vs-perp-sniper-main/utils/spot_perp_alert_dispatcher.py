@@ -35,12 +35,18 @@ class SpotPerpAlertDispatcher:
         is_not_duplicate = signal_hash != self.last_signal_hash
         is_outside_cooldown = (now - self.last_signal_time) > self.cooldown_seconds
 
-        if is_dominant_trend and is_high_confidence and is_not_duplicate and is_outside_cooldown:
+        # === Direction override based on trap type ===
+        if "SHORT trap" in signal_text or "bull trap" in signal_text:
+            direction = "🔴 SHORT"
+        elif "LONG trap" in signal_text or "short squeeze" in signal_text:
+            direction = "🟢 LONG"
+        else:
             direction = {
                 "spot_dominant": "🟢 LONG",
                 "perp_dominant": "🔴 SHORT"
             }.get(label, "⚠️ NEUTRAL")
 
+        if is_dominant_trend and is_high_confidence and is_not_duplicate and is_outside_cooldown:
             message = (
                 f"📈 **HIGH-CONFLUENCE SNIPER SIGNAL (SOL)**\n"
                 f"{signal_text}\n\n"
