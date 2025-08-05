@@ -63,7 +63,7 @@ class SpotVsPerpEngine:
     async def monitor(self):
         while True:
             try:
-                # === Collect Exchange Data ===
+                # === DATA FETCHING ===
                 cb_cvd = self.coinbase.get_cvd()
                 cb_price = self.coinbase.get_last_price()
 
@@ -81,24 +81,26 @@ class SpotVsPerpEngine:
                 await self.funding_tracker.update()
                 self.delta_tracker.add_tick(bin_perp)
                 spike_data = self.delta_tracker.check_spike()
+
                 self.sentiment.fetch_sentiment()
                 sentiment_data = self.sentiment.get_summary()
-                btc_data = self.btc.get_deltas()
-                liq_data = self.liquidations.get_liquidation_snapshot()
-                oi_data = self.oi_feed.get_snapshot()
 
+                btc_data = self.btc.get_deltas()
                 btc_spot = btc_data["btc_spot"]
                 btc_perp = btc_data["btc_perp"]
                 btc_price = btc_data["price"]
 
-                # === Score ===
+                liq_data = self.liquidations.get_liquidation_snapshot()
+                oi_data = self.oi_feed.get_snapshot()
+
+                # === SCORING ===
                 self.memory.update(cb_cvd, bin_spot, bin_perp)
                 deltas = self.memory.get_all_deltas()
                 scored = score_spot_perp_confluence_multi(deltas)
                 confidence = scored["score"]
                 bias_label = scored["label"]
 
-                # === Signal Logic ===
+                # === SIGNAL LOGIC ===
                 signal = "📊 No clear bias"
 
                 if liq_data['bias'] == 'short' and liq_data['spike'] and cb_cvd > 0 and oi_data['direction'] != 'down':
@@ -131,7 +133,7 @@ class SpotVsPerpEngine:
                 elif cb_cvd > 0 and bin_spot < 0:
                     signal = "🟣 Coinbase buying, Binance Spot selling — divergence"
 
-                # === Console Log ===
+                # === CONSOLE REPORT ===
                 print("\n==================== SPOT vs PERP REPORT (SOL) ====================")
                 print(f"🟩 CB Spot CVD: {cb_cvd} | Price: {cb_price}")
                 print(f"🟦 Binance Spot CVD: {bin_spot}")
@@ -143,4 +145,64 @@ class SpotVsPerpEngine:
                 print(f"📊 OI Data: {oi_data}")
                 print(f"⚡ Delta Spike: {spike_data}")
                 print(f"📣 Sentiment: {sentiment_data}")
-                print(f"🔗 BTC Spot: {btc_spot} | BTC Per
+                print(f"🔗 BTC Spot: {btc_spot} | BTC Perp: {btc_perp} | Price: {btc_price}")
+                print(f"\n🧠 Signal: {signal}")
+                for tf, tf_deltas in deltas.items():
+                    print(f"🕒 {tf} Δ → CB: {tf_deltas['cb_cvd']}% | Spot: {tf_deltas['bin_spot']}% | Perp: {tf_deltas['bin_perp']}%")
+                print(f"💡 Confidence: {confidence}/10 → {bias_label.upper()}")
+                print("====================================================================")
+
+                # === SNAPSHOT + ALERTING ===
+                snapshot = {
+                    "exchange": "multi",
+                    "signal": signal,
+                    "confidence": confidence,
+                    "bias": bias_label,
+                    "price": bin_price or cb_price or bybit_price or okx_price,
+                    "funding_rate": self.funding_tracker.get_average(),
+                    "spike": spike_data["spike"],
+                    "spike_delta": spike_data["net_delta"],
+                    "sentiment_score": sentiment_data["galaxy_score"],
+                    "social_mentions": sentiment_data["mentions"],
+                    "btc_spot": btc_spot,
+                    "btc_perp": btc_perp,
+                    "liquidations": liq_data,
+                    "oi": oi_data
+                }
+
+                log_snapshot(snapshot)
+
+                now = time.time()
+                signal_signature = f"{signal}-{bin_spot}-{cb_cvd}-{bin_perp}"
+                signal_hash = hashlib.sha256(signal_signature.encode()).hexdigest()
+
+                is_unique = signal_hash != self.last_signal_hash
+                is_cooldown = now - self.last_signal_time > self.signal_cooldown_seconds
+                is_meaningful = any(tag in signal for tag in ["✅", "🚨", "⚠️", "🟡", "🟣", "💥", "🔥", "💣"])
+
+                if is_unique and is_cooldown and is_meaningful:
+                    write_snapshot_to_supabase(snapshot)
+                    self.last_signal = signal
+                    self.last_signal_time = now
+                    self.last_signal_hash = signal_hash
+
+                if self.alert_buffer.should_send(signal, confidence, bias_label):
+                    await self.alert_dispatcher.maybe_alert(
+                        signal,
+                        confidence,
+                        bias_label,
+                        deltas.get("15m", {}),
+                        force_test=FORCE_TEST_ALERT
+                    )
+
+                if self.executor.should_execute(confidence, bias_label):
+                    self.executor.execute(signal, confidence, bin_price or cb_price, bias_label)
+
+            except Exception as e:
+                print(f"[ERROR] Monitor loop failed: {e}")
+
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    engine = SpotVsPerpEngine()
+    asyncio.run(engine.run())
